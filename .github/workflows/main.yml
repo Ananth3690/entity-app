@@ -1,0 +1,182 @@
+name: Build Entity APK
+on: 
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:  # Allows manual trigger
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Setup Java
+      uses: actions/setup-java@v3
+      with:
+        java-version: '11'
+        distribution: 'temurin'
+        
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v2
+      
+    - name: Accept Android Licenses
+      run: |
+        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+        
+    - name: Install Android Tools
+      run: |
+        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platform-tools"
+        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "build-tools;30.0.3"
+        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-30"
+        
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        
+    - name: Install Bubblewrap
+      run: npm install -g @bubblewrap/cli
+        
+    - name: Create Entity Project Structure
+      run: |
+        # Create minimal Entity app structure
+        mkdir -p client backend
+        
+        # Create manifest
+        cat > client/manifest.json << 'EOF'
+        {
+          "name": "Entity Assistant",
+          "short_name": "Entity",
+          "description": "JARVIS-like multilingual voice assistant",
+          "start_url": "/",
+          "display": "standalone",
+          "background_color": "#1a1a1a",
+          "theme_color": "#3b82f6",
+          "icons": [
+            {
+              "src": "https://via.placeholder.com/192x192/3b82f6/ffffff?text=E",
+              "sizes": "192x192",
+              "type": "image/png"
+            },
+            {
+              "src": "https://via.placeholder.com/512x512/3b82f6/ffffff?text=Entity",
+              "sizes": "512x512",
+              "type": "image/png"
+            }
+          ]
+        }
+        EOF
+        
+        # Create simple HTML page
+        cat > client/index.html << 'EOF'
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Entity Assistant</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <link rel="manifest" href="manifest.json">
+            <style>
+                body { margin: 0; padding: 20px; font-family: sans-serif; background: #1a1a1a; color: white; }
+                .container { max-width: 600px; margin: 0 auto; padding: 40px; background: #2a2a2a; border-radius: 20px; }
+                h1 { color: #3b82f6; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Entity Assistant</h1>
+                <p>Your JARVIS-like voice assistant</p>
+                <p>App is running. Use voice commands or text input.</p>
+            </div>
+        </body>
+        </html>
+        EOF
+        
+    - name: Build APK
+      run: |
+        # Start HTTP server for manifest
+        cd client
+        python3 -m http.server 8080 &
+        SERVER_PID=$!
+        sleep 5
+        
+        cd ..
+        
+        # Initialize TWA project
+        echo "Initializing TWA project..."
+        bubblewrap init --manifest "http://localhost:8080/manifest.json" --directory twa-project <<< "
+        y
+        y
+        y
+        
+        
+        
+        
+        
+        
+        
+        "
+        
+        # Build APK
+        cd twa-project
+        echo "Building APK with Gradle..."
+        ./gradlew assembleRelease --no-daemon
+        
+        # Find the APK
+        APK_FILE=$(find . -name "*.apk" -type f | grep -i release | grep -v signed | head -n1)
+        echo "Found APK: $APK_FILE"
+        
+        # Create keystore
+        echo "Creating signing keystore..."
+        keytool -genkeypair -v \
+          -keystore entity.jks \
+          -alias entity \
+          -keyalg RSA \
+          -keysize 2048 \
+          -validity 10000 \
+          -storepass "entity123456" \
+          -keypass "entity123456" \
+          -dname "CN=Entity Assistant, OU=Android, O=Entity, L=San Francisco, ST=CA, C=US" \
+          -storetype JKS <<< $'\n\n\n\n\n\n\n\n\n\n\n\n'
+        
+        # Sign APK
+        echo "Signing APK..."
+        zipalign -v -p 4 "$APK_FILE" entity-aligned.apk
+        apksigner sign \
+          --ks entity.jks \
+          --ks-key-alias entity \
+          --ks-pass pass:entity123456 \
+          entity-aligned.apk
+        
+        # Verify signature
+        apksigner verify --verbose entity-aligned.apk
+        
+        # Kill the HTTP server
+        kill $SERVER_PID 2>/dev/null || true
+        
+        # Copy APK to root
+        cp entity-aligned.apk ../Entity-Assistant.apk
+        
+        echo "✅ APK build complete!"
+        echo "File: $(pwd)/../Entity-Assistant.apk"
+        
+    - name: Upload APK Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: Entity-Assistant-APK
+        path: Entity-Assistant.apk
+        retention-days: 90
+        
+    - name: Create Release
+      if: success()
+      uses: softprops/action-gh-release@v1
+      with:
+        name: Entity Assistant v1.0
+        tag_name: v1.0
+        files: Entity-Assistant.apk
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
